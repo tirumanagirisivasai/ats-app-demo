@@ -1,0 +1,8 @@
+- edit out the code to fix the job desc generator [DONE]
+    - Also fix the code to get the experience [DONE]
+- in the app.py file fix the matcher results code [DONE]
+    - Fix the jd_summarizer [DONE]
+
+- deploy the app into the github
+- COnnect the github to the huggingface repo
+- And then spend time debugging the code.
