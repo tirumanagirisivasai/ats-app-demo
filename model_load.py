@@ -1,70 +1,76 @@
 import torch
 import json
 import os
+import regex as re
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
 
 global model, tokenizer
+
 local_model_dir = "./mistral_model"
 
-def load_model():
-    if os.path.exists(local_model_dir):
-        if os.listdir(local_model_dir) == []:
-            print("Model files not found in the directory, downloading...")
 
-            try:
-                model_name = "mistralai/Mistral-7B-Instruct-v0.3"
-
-                # Download and save locally
-                tokenizer_download = AutoTokenizer.from_pretrained(model_name)
-                tokenizer_download.save_pretrained(local_model_dir)
-
-                model_download = AutoModelForCausalLM.from_pretrained(
-                    model_name,
-                    torch_dtype="auto"
-                )
-
-                model_download.save_pretrained(local_model_dir)
-                return {"Status":"Model Downloaded into the " + local_model_dir, "model_path":local_model_dir}
-
-            except Exception as e:
-                return {"Status":"Error While Downloading Model"}
-        else:
-            print("Model files found in the directory, loading...")
-    else:
-        os.makedirs(local_model_dir)
-        print("Model directory created, downloading model...")
-
-        try:
-            model_name = "mistralai/Mistral-7B-Instruct-v0.3"
-
-            # Download and save locally
-            tokenizer_download = AutoTokenizer.from_pretrained(model_name)
-            tokenizer_download.save_pretrained(local_model_dir)
-
-            model_download = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype="auto"
-            )
-
-            model_download.save_pretrained(local_model_dir)
-            return {"Status":"Model Downloaded into the " + local_model_dir, "model_path":local_model_dir}
-
-        except Exception as e:
-            return {"Status":"Error While Downloading Model"+str(e)}    
-    
+def assign_model():
+    """Loads tokenizer + model from the local directory."""
+    global tokenizer, model
     try:
-        global tokenizer, model
         tokenizer = AutoTokenizer.from_pretrained(local_model_dir)
         model = AutoModelForCausalLM.from_pretrained(
             local_model_dir,
             device_map="auto",
             torch_dtype=torch.float16
-            ).eval()
-        
-        return {"Status":"Model Loaded Successfully", "model_path":local_model_dir}
+        ).eval()
+
+        return tokenizer, model
+
     except Exception as e:
-        return {"Status":"Error While Loading Model"+str(e)}    
+        raise RuntimeError(f"Error loading model: {e}")
+
+
+def load_model():
+    """Downloads the model if needed, then loads it."""
+    global tokenizer, model
+
+    # --- Case 1: folder exists but is empty (download needed)
+    if os.path.exists(local_model_dir) and os.listdir(local_model_dir) == []:
+        print("Model directory empty. Downloading...")
+
+        model_name = "mistralai/Mistral-7B-Instruct-v0.3"
+
+        # Download model + tokenizer
+        tokenizer_download = AutoTokenizer.from_pretrained(model_name)
+        tokenizer_download.save_pretrained(local_model_dir)
+
+        model_download = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype="auto"
+        )
+        model_download.save_pretrained(local_model_dir)
+
+        return assign_model()
+
+    # --- Case 2: folder does not exist (create + download)
+    if not os.path.exists(local_model_dir):
+        print("Model folder missing. Creating & downloading...")
+        os.makedirs(local_model_dir)
+
+        model_name = "mistralai/Mistral-7B-Instruct-v0.3"
+
+        tokenizer_download = AutoTokenizer.from_pretrained(model_name)
+        tokenizer_download.save_pretrained(local_model_dir)
+
+        model_download = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype="auto"
+        )
+        model_download.save_pretrained(local_model_dir)
+
+        return assign_model()
+
+    # --- Case 3: folder exists and contains model files (load)
+    print("Model found locally. Loading...")
+    return assign_model()    
+    
 
 def score_candidate_v4(data:dict, required_years:int, critical_skills=None):
     if critical_skills is None:
@@ -145,7 +151,9 @@ Rules:
     prompt = schema_description + "\n\nResume text:\n" + resume_text
 
     # Prepare input
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
 
     # Generate
     outputs = model.generate(
@@ -205,7 +213,10 @@ Rules:
 """
 
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+
 
     outputs = model.generate(
         **inputs,
@@ -219,15 +230,15 @@ Rules:
         _idx = summary.rfind("# Job Title")
         summary = summary[_idx+len("# Job Title"):]
         temp = summary[summary.rfind("# Experience")+len("# Experience"):summary.rfind('# Preferred Skills')-1]
-        experience = int(temp.replace('\n', ''))
+        experience = re.findall(r'\d+', temp)
+        experience = experience[0] if experience else "0"
 
         skills_required = json.loads(summary[summary.rfind("# Skills")+len("# Skills"):])
-        return {"Status":"OK", "outputs":[summary, skills_required, experience]}
+        return {"Status":"OK", "output":[summary, skills_required['skills'], experience]}
     except Exception as e:
-        return {"Status":"ERROR", "outputs":[str(e)]}
+        return {"Status":"ERROR", "output":[str(e)]}
 
 def chat(text, called_by):
-    load_model()
     max_length = 512
 
     if called_by == "resume_skill_extractor":
@@ -285,7 +296,9 @@ Required Experience (years):
 
 """
 
-    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    device = next(model.parameters()).device
+    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = {k: v.to(device) for k, v in inputs.items()}
 
     outputs = model.generate(
         **inputs,
