@@ -1,76 +1,120 @@
-import torch
-import json
+# model_load.py
 import os
+import shutil
+import json
 import regex as re
+import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-
-global model, tokenizer
-
 local_model_dir = "./mistral_model"
+model_name = "mistralai/Mistral-7B-Instruct-v0.3"
 
-
-def assign_model():
-    """Loads tokenizer + model from the local directory."""
+def load_model():
     global tokenizer, model
-    try:
+
+    # ---- 1. Check if the folder exists and looks healthy ----
+    required_files = ["config.json", "generation_config.json", "tokenizer.json"]
+    is_healthy = os.path.isdir(local_model_dir) and all(
+        os.path.exists(os.path.join(local_model_dir, f)) for f in required_files
+    )
+
+    # ---- 2. If not healthy → delete and redownload ----
+    if not is_healthy:
+        print("Model folder is missing or corrupted → deleting and redownloading...")
+        if os.path.exists(local_model_dir):
+            shutil.rmtree(local_model_dir)  # full clean
+        os.makedirs(local_model_dir, exist_ok=True)
+
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer.save_pretrained(local_model_dir)
+
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map="auto",
+            trust_remote_code=True
+        )
+        model.save_pretrained(local_model_dir)
+        print("Fresh model downloaded and saved locally.")
+    else:
+        print("Loading model from healthy local folder...")
         tokenizer = AutoTokenizer.from_pretrained(local_model_dir)
         model = AutoModelForCausalLM.from_pretrained(
             local_model_dir,
+            torch_dtype=torch.float16,
             device_map="auto",
-            torch_dtype=torch.float16
+            trust_remote_code=True
         ).eval()
 
-        return tokenizer, model
-
-    except Exception as e:
-        raise RuntimeError(f"Error loading model: {e}")
+    return tokenizer, model
 
 
-def load_model():
-    """Downloads the model if needed, then loads it."""
-    global tokenizer, model
+# Load once at import time
+tokenizer, model = load_model()
 
-    # --- Case 1: folder exists but is empty (download needed)
-    if os.path.exists(local_model_dir) and os.listdir(local_model_dir) == []:
-        print("Model directory empty. Downloading...")
 
-        model_name = "mistralai/Mistral-7B-Instruct-v0.3"
 
-        # Download model + tokenizer
-        tokenizer_download = AutoTokenizer.from_pretrained(model_name)
-        tokenizer_download.save_pretrained(local_model_dir)
+def summarize_jd(jd_text, max_tokens=512):
+    prompt = f"""[INST] You are an expert recruiter. Rewrite the following job description in clean, structured markdown format.
 
-        model_download = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto"
-        )
-        model_download.save_pretrained(local_model_dir)
+Job Description:
+{jd_text}
 
-        return assign_model()
+Output exactly in this format:
 
-    # --- Case 2: folder does not exist (create + download)
-    if not os.path.exists(local_model_dir):
-        print("Model folder missing. Creating & downloading...")
-        os.makedirs(local_model_dir)
+# Job Title
+<clear one-line title>
 
-        model_name = "mistralai/Mistral-7B-Instruct-v0.3"
+# Job Summary
+<3-4 sentence summary>
 
-        tokenizer_download = AutoTokenizer.from_pretrained(model_name)
-        tokenizer_download.save_pretrained(local_model_dir)
+# Key Responsibilities
+- Point one
+- Point two
 
-        model_download = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype="auto"
-        )
-        model_download.save_pretrained(local_model_dir)
+# Required Skills
+- Skill one
+- Skill two
 
-        return assign_model()
+# Experience
+<Number> years
 
-    # --- Case 3: folder exists and contains model files (load)
-    print("Model found locally. Loading...")
-    return assign_model()    
-    
+# Preferred Skills
+- Nice to have
+
+# Skills (JSON)
+{{"skills": ["skill1", "skill2", "skill3"]}}
+[/INST]"""
+
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=max_tokens,
+        temperature=0.1,
+        do_sample=False,
+        pad_token_id=tokenizer.eos_token_id
+    )
+    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    response = response[response.rfind("# Job Title"):]
+
+    # Extract JSON block safely
+    json_match = re.search(r'\{.*"skills".*\}', response, re.DOTALL)
+    skills = []
+    exp = "0"
+    #full_text = response.split("[/INST]")[-1] if "[/INST]" in response else response
+
+    if json_match:
+        try:
+            skills = json.loads(json_match.group(0))["skills"]
+        except:
+            skills = []
+
+    # Extract experience number
+    exp_match = re.search(r'# Experience\s*\n\s*([0-9]+)', response)
+    if exp_match:
+        exp = exp_match.group(1)
+
+    return {"Status": "OK", "output": [response.strip(), skills, exp]}
 
 def score_candidate_v4(data:dict, required_years:int, critical_skills=None):
     if critical_skills is None:
@@ -178,77 +222,6 @@ Rules:
     except Exception as e:
         return {"Status":"ERROR", "output":[str(e)]}
     
-def summarize_jd(jd_text, max_tokens=512):
-    prompt = f"""
-You are a skilled job description generator and your job is to create a proper Job description for the following job description in the exact structure below.
-DO NOT repeat the prompt or add any extra text.
-
-Job Description:
-{jd_text}
-
-Output Structure:
-# Job Title
-- A one-line job name
-# Job Summary
-- A concise overview (3-4 lines)
-
-# Key Responsibilities
-- Bullet points
-
-# Required Skills
-- Bullet points
-
-# Experience
-- Years of experience required
-
-# Preferred Skills
-- Bullet points
-
-# Skills (JSON)
-{{"skills": ["skill1", "skill2", ...]}}
-
-Rules:
-- If no Experience mentioned, set it to 0
-- If no skills mentioned, generate the technical skills based on the job description.
-"""
-
-
-    device = next(model.parameters()).device
-    inputs = tokenizer(prompt, return_tensors="pt")
-    inputs = {k: v.to(device) for k, v in inputs.items()}
-
-
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=max_tokens,
-        temperature=0.1,
-        do_sample=False
-    )
-
-    summary = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    try:
-        _idx = summary.rfind("# Job Title")
-        summary = summary[_idx+len("# Job Title"):]
-        temp = summary[summary.rfind("# Experience")+len("# Experience"):summary.rfind('# Preferred Skills')-1]
-        experience = re.findall(r'\d+', temp)
-        experience = experience[0] if experience else "0"
-
-        skills_required = json.loads(summary[summary.rfind("# Skills")+len("# Skills"):])
-        return {"Status":"OK", "output":[summary, skills_required['skills'], experience]}
-    except Exception as e:
-        return {"Status":"ERROR", "output":[str(e)]}
-
-def chat(text, called_by):
-    max_length = 512
-
-    if called_by == "resume_skill_extractor":
-        return extract_skills(text, max_length)
-    
-    elif called_by == "jd_generator":
-        return summarize_jd(text, max_tokens=max_length) 
-    else:
-        return {"Status":"Error", "output": "Invalid called_by parameter"}
-
 
 def skills_matcher(js, cs, cex, jex, max_tokens=512):
 
@@ -263,6 +236,7 @@ Expected output:
   "semantic_matches": [],
   "partial_matches": [],
   "missing_skills": [],
+  "candidate_relevant_years": {cex}
 }}
 
 ### Classification Rules
