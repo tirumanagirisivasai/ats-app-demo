@@ -4,17 +4,12 @@ import fitz
 from docx import Document
 import io
 #prevents the reloading of the model on every interaction
-@st.cache_resource  
+@st.cache_resource
 def cached_load_model():
-    try:
+    tokenizer, model = load_model()
+    return tokenizer, model
 
-        load_model()
-        return True
-    except Exception as e:
-        st.error(f"Error loading model: {e}")
-        return False
-    
-cached_load_model()
+tokenizer, model = cached_load_model()
 
 def extract_text_from_file(file_path):
     file_name = file_path.name.lower()
@@ -44,15 +39,16 @@ with st.container(border=True):
 
         job_desc = summarize_jd(raw_job_description, max_tokens=512)
     
-    if job_desc["Status"] == "OK":
-        generated_jd = job_desc["outputs"][0]
-        skills_required = job_desc["outputs"][1]
-    else:
-        generated_jd = "Error generating job description."
+        if job_desc["Status"] == "OK":
+            generated_jd = job_desc["output"][0]
+            skills_required = job_desc["output"][1]
+        else:
+            generated_jd = "Error generating job description."
 
-    st.markdown(generated_jd)
-    st.markdown(skills_required)
+        st.markdown(generated_jd)
+        st.markdown(skills_required)
 
+"""
 st.markdown("### Resume Analysis")
 with st.container(border=True):
     
@@ -63,7 +59,7 @@ with st.container(border=True):
         parsed_resume = extract_text_from_file(resume)
         skills = extract_skills(parsed_resume, max_tokens=512) #output is in JSON format i.e., {"status":"OK", "outputs":{"Skills":[], "E-mail":"", "experience":""}}
         if skills["Status"] == "OK":
-            skills = skills["outputs"]
+            skills = skills["output"]
             candidate_skills = skills['skills']
             candidate_exp = skills['experience']
             st.write("Skills ", skills['skills'])
@@ -107,11 +103,11 @@ with st.container(border=True):
             if st.button("Submit JD", key="jd_submit"):
                 match_jd = summarize_jd(jd_desc, max_tokens=512)
                 if match_jd["Status"] == "OK":
-                    match_jd = match_jd["outputs"][0]
+                    match_jd = match_jd["output"][0]
                     st.write("Job Description generated successfully!")
                     st.markdown(match_jd)
-                match_job_skills = match_jd["outputs"][1]
-                match_job_experience = match_jd["outputs"][2]
+                match_job_skills = match_jd["output"][1]
+                match_job_experience = match_jd["output"][2]
         else:
             st.error("Please select a valid job description source.")
             st.stop()
@@ -127,7 +123,7 @@ with st.container(border=True):
                 parsed_resume = extract_text_from_file(comp_resume)
                 match_skills = extract_skills(parsed_resume, max_tokens=512) #output is in JSON format i.e., {"status":"OK", "outputs":{"Skills":[], "E-mail":"", "experience":""}}
                 if match_skills["Status"] == "OK":
-                    match_skills = match_skills["outputs"]
+                    match_skills = match_skills["output"]
                     match_candidate_skills = match_skills['skills']
                     match_candidate_exp = match_skills['experience']
                     st.write("Skills ", match_skills['skills'])
@@ -151,3 +147,4 @@ with st.container(border=True):
             st.write("Good Candidate, But not enough to shortlist")
         else:
             st.write("Unfit Candidate")
+"""
